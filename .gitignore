@@ -16,9 +16,8 @@ src-tauri/gen/
 
 # Large model files & compiled sidecars
 *.gguf
-src-tauri/models/*.gguf
-src-tauri/binaries/llama-server*
-src-tauri/binaries/backend*
+src-tauri/binaries/
+src-tauri/models/
 
 # Local SQLite databases & dynamic runtime configs
 *.db

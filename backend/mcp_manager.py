@@ -131,12 +131,80 @@ class MCPManager:
                         "parameters": getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))
                     }
                 })
+
+        # Add built-in generative UI chart tools
+        openai_tools.extend([
+            {
+                "type": "function",
+                "function": {
+                    "name": "render_pie_chart",
+                    "description": "Render an interactive visual pie chart to the user. Call this when asked to make a pie chart, visual breakdown, or show percentage distribution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Title of the pie chart"},
+                            "slices": {
+                                "type": "array",
+                                "description": "List of data slices with name and numerical value",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string", "description": "Label for slice"},
+                                        "value": {"type": "number", "description": "Numeric value or percentage"}
+                                    },
+                                    "required": ["name", "value"]
+                                }
+                            }
+                        },
+                        "required": ["title", "slices"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "render_bar_chart",
+                    "description": "Render an interactive bar chart to the user for comparisons or metrics.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Title of the bar chart"},
+                            "labels": {"type": "array", "items": {"type": "string"}, "description": "X-axis category labels"},
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "data": {"type": "array", "items": {"type": "number"}}
+                                    },
+                                    "required": ["name", "data"]
+                                }
+                            }
+                        },
+                        "required": ["title", "labels", "series"]
+                    }
+                }
+            }
+        ])
+
         return openai_tools
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         """
-        Route a tool call to the appropriate server and return the text result.
+        Route a tool call to the appropriate server or built-in handler and return the text result.
         """
+        # Handle built-in chart tools
+        if tool_name == "render_pie_chart":
+            title = arguments.get("title", "Pie Chart")
+            slices = arguments.get("slices", [])
+            return f"Successfully generated interactive pie chart '{title}' with {len(slices)} slices."
+
+        if tool_name == "render_bar_chart":
+            title = arguments.get("title", "Bar Chart")
+            labels = arguments.get("labels", [])
+            return f"Successfully generated interactive bar chart '{title}' across {len(labels)} categories."
+
         if tool_name not in self._tool_routes:
             return f"Error: Tool '{tool_name}' not found."
             

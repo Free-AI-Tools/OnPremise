@@ -10,6 +10,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@a2ui/react": "^0.11.1",
+    "@a2ui/web_core": "^0.11.0",
     "@ag-ui/client": "^1.0.0",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-process": "^2.2.0",

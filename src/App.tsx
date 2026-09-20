@@ -1,36 +1,54 @@
 import React, { useState } from 'react';
-import { Sidebar, NavSection } from './components/Sidebar';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { ClaudeSidebar, NavSection } from './components/ClaudeSidebar';
 import { ChatView } from './components/ChatView';
 import { MCPManagerView } from './components/MCPManagerView';
 import { SkillsManagerView } from './components/SkillsManagerView';
 import { SettingsView } from './components/SettingsView';
 import { ExportModal } from './components/ExportModal';
 
-export const App: React.FC = () => {
+export const MainApp: React.FC = () => {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   const [currentSection, setCurrentSection] = useState<NavSection>('chat');
   const [conversationId, setConversationId] = useState<string>(() => `conv_${Date.now()}`);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [sidebarRefresh, setSidebarRefresh] = useState(0);
 
   const handleNewChat = () => {
     setConversationId(`conv_${Date.now()}`);
     setCurrentSection('chat');
   };
 
+  const handleMessageSent = () => {
+    setSidebarRefresh((prev) => prev + 1);
+  };
+
   return (
-    <div className="flex h-screen w-screen bg-slate-900 overflow-hidden font-sans select-none">
-      {/* Navigation Shell */}
-      <Sidebar
+    <div className={`flex h-screen w-screen overflow-hidden font-sans select-none transition-colors duration-200 ${
+      isDark ? 'dark bg-[#141413] text-[#F4F4F5]' : 'bg-[#FAF9F5] text-[#1F1E1D]'
+    }`}>
+      {/* Claude Desktop Navigation Sidebar */}
+      <ClaudeSidebar
         currentSection={currentSection}
         onSelectSection={setCurrentSection}
+        activeConversationId={conversationId}
+        onSelectConversation={(id) => {
+          setConversationId(id);
+          setCurrentSection('chat');
+        }}
         onNewChat={handleNewChat}
+        refreshTrigger={sidebarRefresh}
       />
 
-      {/* Main Content Area */}
+      {/* Main Workspace Canvas */}
       <div className="flex-1 h-full overflow-hidden flex flex-col">
         {currentSection === 'chat' && (
           <ChatView
             conversationId={conversationId}
+            onSelectConversation={setConversationId}
             onOpenExport={() => setShowExportModal(true)}
+            onMessageSent={handleMessageSent}
           />
         )}
         {currentSection === 'mcp' && <MCPManagerView />}
@@ -46,6 +64,14 @@ export const App: React.FC = () => {
         />
       )}
     </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <ThemeProvider>
+      <MainApp />
+    </ThemeProvider>
   );
 };
 

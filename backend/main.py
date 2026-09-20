@@ -9,8 +9,13 @@ Wires together:
   - db.py (SQLite chat history persistence)
   - REST endpoints for MCP, Tools, Skills, and Conversations
 """
+import json
 import logging
+import subprocess
+import sys
 import uuid
+from datetime import datetime
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -60,6 +65,10 @@ async def lifespan(app: FastAPI):
     for s in server_status:
         status = "✓ connected" if s["connected"] else f"✗ error: {s['error']}"
         logger.info(f"  MCP server '{s['name']}': {status} ({s['tool_count']} tools)")
+
+    # Detect context window size from llama-server (adaptive to device RAM)
+    detected_ctx = await llm_client.detect_context_size()
+    logger.info(f"LLM context window: {detected_ctx} tokens")
 
     logger.info(f"Backend ready on {settings.backend_host}:{settings.backend_port}")
     yield
@@ -135,6 +144,15 @@ class TitleUpdate(BaseModel):
     title: str
 
 
+class ExportRequest(BaseModel):
+    format: str = "md"
+    include_tools: bool = True
+
+
+class OpenFileRequest(BaseModel):
+    path: str
+
+
 # =====================================================================
 # Core Endpoints
 # =====================================================================
@@ -203,6 +221,89 @@ async def delete_conversation(conversation_id: str):
     if not success:
         raise HTTPException(status_code=404, detail=f"Conversation '{conversation_id}' not found")
     return {"status": "deleted"}
+
+
+@app.post("/conversations/{conversation_id}/export")
+async def export_conversation(conversation_id: str, req: ExportRequest):
+    """Save conversation directly to user Downloads folder and return absolute path."""
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail=f"Conversation '{conversation_id}' not found")
+
+    downloads_dir = Path.home() / "Downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_title = conv.get("title", "conversation")
+    safe_title = "".join(c if c.isalnum() or c in (" ", "-", "_") else "" for c in raw_title)
+    safe_title = safe_title.strip().replace(" ", "_")[:35] or "conversation"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{safe_title}_{timestamp}.{req.format}"
+    target_path = downloads_dir / filename
+
+    if req.format == "json":
+        target_path.write_text(json.dumps(conv, indent=2, ensure_ascii=False), encoding="utf-8")
+    elif req.format == "md":
+        lines = [
+            f"# {conv.get('title', 'Conversation Export')}",
+            f"*Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*Thread ID: {conversation_id}*",
+            "",
+            "---",
+            ""
+        ]
+        for msg in conv.get("messages", []):
+            role_title = msg.get("role", "assistant").upper()
+            ts = msg.get("timestamp", "")
+            lines.append(f"### {role_title} ({ts})")
+            lines.append("")
+            lines.append(msg.get("content", ""))
+            lines.append("")
+            if req.include_tools and msg.get("tool_calls"):
+                lines.append("> **Tool Execution Traces:**")
+                for tc in msg["tool_calls"]:
+                    lines.append(f"> - Tool: `{tc.get('tool_name')}`")
+                    lines.append(f">   Arguments: `{json.dumps(tc.get('arguments', {}))}`")
+                    lines.append(f">   Result: {tc.get('result_summary', '')}")
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+        target_path.write_text("\n".join(lines), encoding="utf-8")
+    else:  # txt
+        lines = [
+            f"CONVERSATION: {conv.get('title', 'Untitled')}",
+            f"DATE: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "=" * 50,
+            ""
+        ]
+        for msg in conv.get("messages", []):
+            lines.append(f"[{msg.get('role', 'user').upper()}]:")
+            lines.append(msg.get("content", ""))
+            lines.append("-" * 40)
+        target_path.write_text("\n".join(lines), encoding="utf-8")
+
+    return {
+        "status": "saved",
+        "file_path": str(target_path.resolve()),
+        "file_name": filename
+    }
+
+
+@app.post("/open-file")
+async def open_file_in_explorer(req: OpenFileRequest):
+    """Open the file in Windows Explorer or default file manager."""
+    target = Path(req.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", str(target.resolve())])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(target.resolve())])
+    else:
+        subprocess.Popen(["xdg-open", str(target.parent.resolve())])
+
+    return {"status": "opened"}
 
 
 # =====================================================================

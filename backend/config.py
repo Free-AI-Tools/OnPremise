@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
-SYSTEM_PROMPT = """Only state facts present in tool results. If search results don't contain specific numbers or details, say so explicitly — never estimate or invent them."""
+SYSTEM_PROMPT = """Only state facts present in tool results. If search results don't contain specific numbers or details, say so explicitly — never estimate or invent them.
+When searching the web, extract clean, concise keywords (e.g. 'top economies GDP PPP 2024') without conversational phrases like 'can you make a pie chart'.
+When the user asks for a chart, visual breakdown, or comparison, call 'render_pie_chart' or 'render_bar_chart' with the data."""
 
 
 @lru_cache()

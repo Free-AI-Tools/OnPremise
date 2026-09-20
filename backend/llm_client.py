@@ -21,8 +21,27 @@ class LLMClient:
         """
         self.base_url = base_url
         self.model = model
+        self.context_size: int = 4096  # Default, updated by detect_context_size()
         # Use a long timeout for CPU inference
         self.client = httpx.AsyncClient(timeout=360.0)
+
+    async def detect_context_size(self) -> int:
+        """
+        Query llama-server /props to discover the actual context window size.
+        Falls back to 4096 if the endpoint is unavailable.
+        """
+        try:
+            response = await self.client.get(f"{self.base_url}/props", timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                gen_settings = data.get("default_generation_settings", {})
+                n_ctx = gen_settings.get("n_ctx", 4096)
+                self.context_size = int(n_ctx)
+                logger.info(f"Detected llama-server context size: {self.context_size}")
+                return self.context_size
+        except Exception as e:
+            logger.warning(f"Could not detect context size from /props: {e}, using default {self.context_size}")
+        return self.context_size
 
     async def chat_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -58,8 +77,12 @@ class LLMClient:
             logger.error(f"Failed to connect to LLM server: {e}")
             raise ConnectionError(f"Failed to connect to LLM server at {self.base_url}: {e}")
         except httpx.HTTPStatusError as e:
-            logger.error(f"LLM server returned an error: {e.response.text}")
-            raise RuntimeError(f"LLM API error: {e.response.status_code} - {e.response.text}")
+            error_text = e.response.text
+            logger.error(f"LLM server returned an error: {error_text}")
+            # Surface context overflow errors distinctly for retry logic
+            if e.response.status_code == 400 and "exceeds" in error_text:
+                raise RuntimeError(f"CONTEXT_OVERFLOW: {error_text}")
+            raise RuntimeError(f"LLM API error: {e.response.status_code} - {error_text}")
 
     async def chat_stream(self, messages: List[Dict[str, Any]]) -> AsyncIterator[str]:
         """
@@ -113,7 +136,10 @@ class LLMClient:
             logger.error(f"Failed to connect to LLM server during stream: {e}")
             raise ConnectionError(f"Failed to connect to LLM server at {self.base_url}: {e}")
         except httpx.HTTPStatusError as e:
-            logger.error(f"LLM server returned an error during stream: {e}")
+            error_text = str(e)
+            logger.error(f"LLM server returned an error during stream: {error_text}")
+            if e.response.status_code == 400 and "exceeds" in error_text:
+                raise RuntimeError(f"CONTEXT_OVERFLOW: {error_text}")
             raise RuntimeError(f"LLM API stream error: {e.response.status_code}")
 
     async def close(self) -> None:

@@ -1,7 +1,37 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg-canvas: #FAF9F5;
+  --bg-sidebar: #F3F1EC;
+  --bg-surface: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --border-subtle: #E5E2DC;
+  --border-strong: #D5D1C8;
+  --text-primary: #1F1E1D;
+  --text-secondary: #716E68;
+  --accent-terracotta: #C2410C;
+  --accent-hover: #9A3412;
+}
+
+.dark, html.dark, :root[data-theme="dark"] {
+  --bg-canvas: #141413;
+  --bg-sidebar: #1A1918;
+  --bg-surface: #20201E;
+  --bg-input: #20201E;
+  --border-subtle: #2E2D2B;
+  --border-strong: #3D3B38;
+  --text-primary: #F4F4F5;
+  --text-secondary: #9E9B94;
+  --accent-terracotta: #EA580C;
+  --accent-hover: #F97316;
+}
+
 @layer base {
   body {
-    @apply bg-slate-900 text-slate-100 antialiased font-sans select-none overflow-hidden h-screen w-screen;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    @apply antialiased font-sans select-none overflow-hidden h-screen w-screen transition-colors duration-200;
   }
 }
