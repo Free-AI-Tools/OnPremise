@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+backend/.venv/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Build outputs & dist
+dist/
+build/
+backend/dist/
+backend/build/
+src-tauri/target/
+src-tauri/gen/
+
+# Large model files & compiled sidecars
+*.gguf
+src-tauri/models/*.gguf
+src-tauri/binaries/llama-server*
+src-tauri/binaries/backend*
+
+# Local SQLite databases & dynamic runtime configs
+*.db
+backend/.config/assistant_history.db
+backend/.config/*.json
+
+# Agent & CLI directories (as requested)
+.claude/
+.hermes/
+.gemini/
+.agent/
+.agents/
+
+skills/
+
+# Environment files & OS junk
+.env
+.env.*
+.DS_Store
+Thumbs.db
+
+docs/
