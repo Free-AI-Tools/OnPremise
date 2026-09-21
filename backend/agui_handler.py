@@ -9,6 +9,7 @@ Includes adaptive context management with 4-step overflow defense:
 """
 import json
 import logging
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -29,6 +30,7 @@ from ag_ui.encoder import EventEncoder
 
 from a2ui_protocol import transform_tool_result_to_a2ui
 import db
+import file_tools
 from config import SYSTEM_PROMPT
 from llm_client import LLMClient
 from mcp_manager import MCPManager
@@ -93,6 +95,26 @@ def prune_messages_for_context(
 def is_context_overflow(err: Exception) -> bool:
     """Check if an exception is a context window overflow from llama-server."""
     return "CONTEXT_OVERFLOW" in str(err)
+
+
+def is_raw_tool_invocation(text: str) -> bool:
+    """Check if the text starts with raw tool invocation or function call syntax."""
+    stripped = text.strip()
+    return bool(re.match(r'^(?:render_pie_chart|render_bar_chart|<tool_call>|call:|[a-zA-Z_]+\s*\(|[a-zA-Z_]+\s+[a-zA-Z_]+=)', stripped, re.IGNORECASE))
+
+
+def clean_response_text(text: str, has_a2ui: bool = False) -> str:
+    """Strip raw tool syntax or provide clean fallback if only tool syntax was output."""
+    cleaned = text.strip()
+    # Strip <think>...</think> or <tool_call>...</tool_call>
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned)
+    cleaned = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', cleaned)
+    cleaned = re.sub(r'^(?:render_pie_chart|render_bar_chart)[^\n]*\n?', '', cleaned, flags=re.IGNORECASE).strip()
+    if is_raw_tool_invocation(cleaned):
+        cleaned = ""
+    if not cleaned and has_a2ui:
+        return "Here is the interactive chart based on your request:"
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +185,10 @@ class AGUIHandler:
                 f"Messages: {len(messages)}"
             )
 
-            # Collect available tools
-            tools = self.mcp.get_openai_tools()
+            # Collect available tools (file operations + code interpreter + MCP)
+            file_tools_schemas = file_tools.get_file_tools_schemas()
+            mcp_tools = self.mcp.get_openai_tools()
+            tools = file_tools_schemas + mcp_tools
             a2ui_payload = None
 
             # --- PASS 1: Tool decision (non-streaming) ---
@@ -226,7 +250,11 @@ class AGUIHandler:
 
                         # Execute the tool
                         logger.info(f"Calling tool '{tool_name}' with args: {tool_args}")
-                        tool_result = await self.mcp.call_tool(tool_name, tool_args)
+                        artifact_payload = None
+                        if file_tools.is_file_tool(tool_name):
+                            tool_result, artifact_payload = await file_tools.execute_file_tool(thread_id, tool_name, tool_args)
+                        else:
+                            tool_result = await self.mcp.call_tool(tool_name, tool_args)
                         logger.info(f"Tool '{tool_name}' returned {len(tool_result)} chars")
 
                         # --- TOOL_CALL_END ---
@@ -245,6 +273,16 @@ class AGUIHandler:
                                     type=EventType.CUSTOM,
                                     name="a2ui:createSurface",
                                     value=a2ui_payload,
+                                )
+                            )
+
+                        # Check for declarative Artifact emission
+                        if artifact_payload:
+                            yield self.encoder.encode(
+                                CustomEvent(
+                                    type=EventType.CUSTOM,
+                                    name="a2ui:createArtifact",
+                                    value=artifact_payload,
                                 )
                             )
 
@@ -272,7 +310,7 @@ class AGUIHandler:
 
                 else:
                     # Direct non-streaming response (no tool calls needed)
-                    direct_content = assistant_msg.get("content", "")
+                    direct_content = clean_response_text(assistant_msg.get("content", ""), has_a2ui=bool(a2ui_payload))
                     yield self.encoder.encode(
                         TextMessageStartEvent(
                             type=EventType.TEXT_MESSAGE_START,
@@ -317,30 +355,52 @@ class AGUIHandler:
             response_tokens: list[str] = []
 
             # Step 2 & 3: Try streaming, catch overflow, prune harder, retry
-            try:
-                async for token in self.llm.chat_stream(messages):
+            buffered_prefix = ""
+            suppress_stream = False
+            has_flushed_buffer = False
+
+            async def stream_tokens(stream_gen):
+                nonlocal buffered_prefix, suppress_stream, has_flushed_buffer
+                async for token in stream_gen:
                     response_tokens.append(token)
-                    yield self.encoder.encode(
-                        TextMessageContentEvent(
-                            type=EventType.TEXT_MESSAGE_CONTENT,
-                            message_id=msg_id,
-                            delta=token,
+                    if not has_flushed_buffer:
+                        buffered_prefix += token
+                        if len(buffered_prefix) >= 20 or "\n" in buffered_prefix:
+                            if is_raw_tool_invocation(buffered_prefix):
+                                suppress_stream = True
+                                has_flushed_buffer = True
+                            else:
+                                has_flushed_buffer = True
+                                yield self.encoder.encode(
+                                    TextMessageContentEvent(
+                                        type=EventType.TEXT_MESSAGE_CONTENT,
+                                        message_id=msg_id,
+                                        delta=buffered_prefix,
+                                    )
+                                )
+                    elif not suppress_stream:
+                        yield self.encoder.encode(
+                            TextMessageContentEvent(
+                                type=EventType.TEXT_MESSAGE_CONTENT,
+                                message_id=msg_id,
+                                delta=token,
+                            )
                         )
-                    )
+
+            try:
+                async for frame in stream_tokens(self.llm.chat_stream(messages)):
+                    yield frame
             except RuntimeError as err:
                 if is_context_overflow(err):
                     logger.warning("Context overflow on Pass 2 — aggressively pruning and retrying stream...")
                     messages = prune_messages_for_context(messages, max_tokens=budget // 2)
                     try:
-                        async for token in self.llm.chat_stream(messages):
-                            response_tokens.append(token)
-                            yield self.encoder.encode(
-                                TextMessageContentEvent(
-                                    type=EventType.TEXT_MESSAGE_CONTENT,
-                                    message_id=msg_id,
-                                    delta=token,
-                                )
-                            )
+                        buffered_prefix = ""
+                        suppress_stream = False
+                        has_flushed_buffer = False
+                        response_tokens.clear()
+                        async for frame in stream_tokens(self.llm.chat_stream(messages)):
+                            yield frame
                     except RuntimeError as retry_err:
                         if is_context_overflow(retry_err):
                             # Step 4: Friendly fallback within the existing text stream
@@ -357,13 +417,37 @@ class AGUIHandler:
                 else:
                     raise err
 
+            if not has_flushed_buffer and buffered_prefix:
+                if is_raw_tool_invocation(buffered_prefix):
+                    suppress_stream = True
+                else:
+                    yield self.encoder.encode(
+                        TextMessageContentEvent(
+                            type=EventType.TEXT_MESSAGE_CONTENT,
+                            message_id=msg_id,
+                            delta=buffered_prefix,
+                        )
+                    )
+
+            if suppress_stream:
+                fallback_msg = "Here is the interactive chart based on your request:" if a2ui_payload else ""
+                if fallback_msg:
+                    yield self.encoder.encode(
+                        TextMessageContentEvent(
+                            type=EventType.TEXT_MESSAGE_CONTENT,
+                            message_id=msg_id,
+                            delta=fallback_msg,
+                        )
+                    )
+
             yield self.encoder.encode(
                 TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id)
             )
 
-            full_response = "".join(response_tokens)
+            raw_full = "".join(response_tokens)
+            full_response = clean_response_text(raw_full, has_a2ui=bool(a2ui_payload))
             if not full_response:
-                full_response = CONTEXT_OVERFLOW_MSG
+                full_response = "Here is the interactive chart based on your request:" if a2ui_payload else CONTEXT_OVERFLOW_MSG
             # Persist assistant response to DB
             await db.save_message(msg_id, thread_id, "assistant", full_response, a2ui_payload)
 

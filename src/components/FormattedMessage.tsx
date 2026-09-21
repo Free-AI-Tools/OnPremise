@@ -9,9 +9,18 @@ interface FormattedMessageProps {
 export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) => {
   if (!content) return null;
 
+  // Filter out raw tool call syntax or internal tags if any reached the frontend
+  const cleanedContent = content
+    .replace(/^(?:render_pie_chart|render_bar_chart)[^\n]*\n?/i, '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .trim();
+
+  if (!cleanedContent) return null;
+
   // 1. Check for Markdown table (| col1 | col2 |)
-  if (content.includes('|') && content.split('\n').some((l) => l.trim().startsWith('|'))) {
-    const lines = content.split('\n');
+  if (cleanedContent.includes('|') && cleanedContent.split('\n').some((l) => l.trim().startsWith('|'))) {
+    const lines = cleanedContent.split('\n');
     const textParts: string[] = [];
     const tableLines: string[] = [];
     let inTable = false;
@@ -41,7 +50,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) =
 
   // 2. Check for bullet percentage distributions (e.g., - China: 20.8% or 1. USA: 18.6%)
   const percentagePattern = /(?:[-*•]|\d+\.)\s*([A-Za-z0-9_\s]{2,25})[:\-=]\s*([0-9]+(?:\.[0-9]+)?)\s*%/g;
-  const matches = Array.from(content.matchAll(percentagePattern));
+  const matches = Array.from(cleanedContent.matchAll(percentagePattern));
 
   if (matches.length >= 3) {
     const chartData = matches.map((m) => ({
@@ -51,11 +60,11 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) =
 
     return (
       <div className="space-y-3 font-sans">
-        <div className="whitespace-pre-wrap leading-relaxed">{content}</div>
+        <div className="whitespace-pre-wrap leading-relaxed">{cleanedContent}</div>
         <PieChartCard title="Visual Share Distribution" data={chartData} donut={true} />
       </div>
     );
   }
 
-  return <div className="whitespace-pre-wrap leading-relaxed font-sans">{content}</div>;
+  return <div className="whitespace-pre-wrap leading-relaxed font-sans">{cleanedContent}</div>;
 };

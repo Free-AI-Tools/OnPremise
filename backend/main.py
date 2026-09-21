@@ -12,6 +12,7 @@ Wires together:
 import json
 import logging
 import subprocess
+import shutil
 import sys
 import uuid
 from datetime import datetime
@@ -19,7 +20,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -27,12 +28,15 @@ from pydantic import BaseModel, Field
 from agui_handler import AGUIHandler
 from config import (
     get_settings,
+    set_custom_storage_root,
+    get_disk_space_info,
     load_mcp_config,
     save_mcp_config,
     load_skills_config,
     save_skills_config,
 )
 import db
+import workspaces
 from llm_client import LLMClient
 from mcp_manager import MCPManager
 from tool_registry import CustomToolRegistry
@@ -153,6 +157,11 @@ class OpenFileRequest(BaseModel):
     path: str
 
 
+class StorageRelocateRequest(BaseModel):
+    new_path: str
+    migrate_existing: bool = True
+
+
 # =====================================================================
 # Core Endpoints
 # =====================================================================
@@ -187,6 +196,26 @@ async def run_agent(input_data: RunAgentInput):
 
 
 # =====================================================================
+# Profile Endpoints
+# =====================================================================
+
+class ProfileUpdate(BaseModel):
+    name: str
+
+@app.get("/profile")
+def get_profile():
+    profile_path = get_settings().config_dir / "profile.json"
+    if profile_path.exists():
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+    return {"name": "User"}
+
+@app.put("/profile")
+def update_profile(data: ProfileUpdate):
+    profile_path = get_settings().config_dir / "profile.json"
+    profile_path.write_text(json.dumps({"name": data.name}), encoding="utf-8")
+    return {"status": "ok", "name": data.name}
+
+# =====================================================================
 # Conversation History Endpoints
 # =====================================================================
 
@@ -216,11 +245,128 @@ async def update_title(conversation_id: str, body: TitleUpdate):
 
 @app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str):
-    """Delete a conversation thread."""
+    """Delete a conversation thread and its workspace."""
     success = await db.delete_conversation(conversation_id)
     if not success:
         raise HTTPException(status_code=404, detail=f"Conversation '{conversation_id}' not found")
+    workspaces.delete_conversation_workspace(conversation_id)
     return {"status": "deleted"}
+
+
+@app.post("/conversations/{conversation_id}/files")
+async def upload_conversation_file(conversation_id: str, file: UploadFile = File(...)):
+    """Upload a file to the conversation's workspace and return rich token-efficient metadata."""
+    uploads_dir = workspaces.get_uploads_dir(conversation_id)
+    safe_filename = Path(file.filename or "upload").name
+    dest_path = uploads_dir / safe_filename
+
+    # Save to disk
+    with dest_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Extract metadata & LLM descriptor
+    metadata = workspaces.extract_file_metadata(dest_path)
+    prompt_descriptor = workspaces.generate_llm_file_descriptor(metadata)
+
+    return {
+        "status": "uploaded",
+        "filename": safe_filename,
+        "metadata": metadata,
+        "llm_descriptor": prompt_descriptor,
+    }
+
+
+@app.get("/conversations/{conversation_id}/files")
+async def list_conversation_files(conversation_id: str):
+    """List all files in uploads and outputs for a conversation."""
+    uploads_dir = workspaces.get_uploads_dir(conversation_id)
+    outputs_dir = workspaces.get_outputs_dir(conversation_id)
+
+    uploads = [workspaces.extract_file_metadata(f) for f in uploads_dir.iterdir() if f.is_file()] if uploads_dir.exists() else []
+    outputs = [workspaces.extract_file_metadata(f) for f in outputs_dir.iterdir() if f.is_file()] if outputs_dir.exists() else []
+
+    return {
+        "uploads": uploads,
+        "outputs": outputs,
+    }
+
+
+# =====================================================================
+# Storage & Disk Management Endpoints
+# =====================================================================
+
+@app.get("/storage/info")
+async def get_storage_info():
+    """Get active storage root path and drive capacity/free space."""
+    root = get_settings().config_dir
+    disk = get_disk_space_info(root)
+    convs = await db.list_conversations()
+    ws_root = workspaces.get_workspaces_root()
+    ws_count = len([p for p in ws_root.iterdir() if p.is_dir()]) if ws_root.exists() else 0
+    return {
+        **disk,
+        "conversations_count": len(convs),
+        "workspaces_count": ws_count,
+    }
+
+
+@app.post("/storage/relocate")
+async def relocate_storage(req: StorageRelocateRequest):
+    """
+    Relocate the entire App Data Root (database, workspaces, configs)
+    to a custom drive and path (e.g. D:\\AI-Data).
+    """
+    target = Path(req.new_path).resolve()
+    old_dir = get_settings().config_dir.resolve()
+
+    if target == old_dir:
+        return {"status": "unchanged", "path": str(target), "disk_info": get_disk_space_info(target)}
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot create directory '{target}': {e}")
+
+    # Check write permission
+    test_file = target / ".test_write"
+    try:
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Path '{target}' is not writable: {e}")
+
+    # Migrate data if requested
+    if req.migrate_existing and old_dir.exists():
+        try:
+            for item in old_dir.iterdir():
+                dest = target / item.name
+                if item.is_file():
+                    shutil.copy2(item, dest)
+                elif item.is_dir() and item.name != "__pycache__":
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    shutil.copytree(item, dest)
+            logger.info(f"Successfully migrated data from {old_dir} to {target}")
+        except Exception as e:
+            logger.error(f"Migration error: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to copy data to '{target}': {e}")
+
+    # Update pointer file & active settings
+    set_custom_storage_root(target)
+    await db.init_db()
+
+    return {
+        "status": "success",
+        "new_path": str(target),
+        "disk_info": get_disk_space_info(target),
+    }
+
+
+@app.delete("/conversations/{conversation_id}/messages_after/{message_id}")
+async def truncate_conversation_after(conversation_id: str, message_id: str):
+    """Delete all messages created after or at message_id (used when editing or retrying turns)."""
+    success = await db.delete_messages_after(conversation_id, message_id)
+    return {"status": "truncated", "success": success}
 
 
 @app.post("/conversations/{conversation_id}/export")

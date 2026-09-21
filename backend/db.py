@@ -13,13 +13,17 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = get_settings().config_dir / "assistant_history.db"
+
+def get_db_path() -> Path:
+    """Dynamically return the active SQLite database path."""
+    return get_settings().config_dir / "assistant_history.db"
 
 
 async def init_db() -> None:
     """Initialize SQLite database tables if they do not exist."""
     get_settings().config_dir.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
+    db_path = get_db_path()
+    async with aiosqlite.connect(db_path) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
@@ -52,14 +56,14 @@ async def init_db() -> None:
             )
         """)
         await db.commit()
-        logger.info(f"Initialized chat history database at {DB_PATH}")
+        logger.info(f"Initialized chat history database at {get_db_path()}")
 
 
 async def create_conversation(conversation_id: str, title: str = "New Conversation", active_skills: Optional[List[str]] = None) -> Dict[str, Any]:
     """Create a new conversation record."""
     now = datetime.now(timezone.utc).isoformat()
     skills_json = json.dumps(active_skills or [])
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(get_db_path()) as db:
         await db.execute(
             "INSERT OR REPLACE INTO conversations (id, title, created_at, updated_at, active_skills) VALUES (?, ?, ?, ?, ?)",
             (conversation_id, title, now, now, skills_json)
@@ -85,7 +89,7 @@ async def save_message(
     now = datetime.now(timezone.utc).isoformat()
     payload_json = json.dumps(a2ui_payload) if a2ui_payload else None
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(get_db_path()) as db:
         # Ensure conversation exists
         async with db.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)) as cursor:
             if not await cursor.fetchone():
@@ -116,7 +120,7 @@ async def save_tool_call(
     """Save details of a completed tool call."""
     now = datetime.now(timezone.utc).isoformat()
     args_json = json.dumps(arguments)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(get_db_path()) as db:
         await db.execute(
             "INSERT OR REPLACE INTO tool_calls (id, message_id, tool_name, arguments, result_summary, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
             (tool_call_id, message_id, tool_name, args_json, result_summary, now)
@@ -125,10 +129,16 @@ async def save_tool_call(
 
 
 async def list_conversations() -> List[Dict[str, Any]]:
-    """List all stored conversations ordered by most recently updated."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    """List all stored conversations ordered by most recent message (last activity)."""
+    async with aiosqlite.connect(get_db_path()) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM conversations ORDER BY updated_at DESC") as cursor:
+        query = """
+            SELECT c.*,
+                   COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = c.id), c.created_at) AS last_message_at
+            FROM conversations c
+            ORDER BY last_message_at DESC
+        """
+        async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
             result = []
             for row in rows:
@@ -140,7 +150,7 @@ async def list_conversations() -> List[Dict[str, Any]]:
 
 async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     """Fetch full conversation history including messages and tool calls."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(get_db_path()) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)) as cursor:
             conv_row = await cursor.fetchone()
@@ -172,12 +182,11 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
 
 
 async def update_conversation_title(conversation_id: str, new_title: str) -> bool:
-    """Update conversation title."""
-    now = datetime.now(timezone.utc).isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Update conversation title without altering conversation activity or updated_at."""
+    async with aiosqlite.connect(get_db_path()) as db:
         cursor = await db.execute(
-            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-            (new_title, now, conversation_id)
+            "UPDATE conversations SET title = ? WHERE id = ?",
+            (new_title, conversation_id)
         )
         await db.commit()
         return cursor.rowcount > 0
@@ -185,7 +194,28 @@ async def update_conversation_title(conversation_id: str, new_title: str) -> boo
 
 async def delete_conversation(conversation_id: str) -> bool:
     """Delete conversation and all associated messages and tool calls."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(get_db_path()) as db:
         cursor = await db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def delete_messages_after(conversation_id: str, message_id: str) -> bool:
+    """Delete all messages in a conversation that were created after or at message_id."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        async with db.execute(
+            "SELECT timestamp FROM messages WHERE conversation_id = ? AND id = ?",
+            (conversation_id, message_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            target_ts = row[0]
+
+        await db.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND timestamp >= ?",
+            (conversation_id, target_ts)
+        )
+        await db.commit()
+        return True
+

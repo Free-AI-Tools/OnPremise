@@ -17,7 +17,9 @@ import {
 export interface AttachedFile {
   name: string;
   size: number;
-  content: string;
+  content?: string;
+  llmDescriptor?: string;
+  isUploading?: boolean;
 }
 
 interface ClaudeInputCardProps {
@@ -25,6 +27,7 @@ interface ClaudeInputCardProps {
   disabled?: boolean;
   status?: 'idle' | 'thinking' | 'searching';
   placeholder?: string;
+  conversationId?: string;
 }
 
 export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
@@ -32,6 +35,7 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
   disabled = false,
   status = 'idle',
   placeholder = 'How can I help you today?',
+  conversationId,
 }) => {
   const [text, setText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -90,25 +94,70 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const readFallback = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = (event.target?.result as string) || '';
+      setAttachedFiles((prev) =>
+        prev.map((f) =>
+          f.name === file.name && f.isUploading
+            ? {
+                name: file.name,
+                size: file.size,
+                content: content.slice(0, 10000),
+                isUploading: false,
+              }
+            : f
+        )
+      );
+    };
+    reader.readAsText(file);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = (event.target?.result as string) || '';
-        setAttachedFiles((prev) => [
-          ...prev,
-          {
-            name: file.name,
-            size: file.size,
-            content,
-          },
-        ]);
-      };
-      reader.readAsText(file);
-    });
+    for (const file of Array.from(files)) {
+      setAttachedFiles((prev) => [
+        ...prev,
+        {
+          name: file.name,
+          size: file.size,
+          isUploading: true,
+        },
+      ]);
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const targetConvId = conversationId || 'default';
+        const res = await fetch(`http://localhost:8000/conversations/${targetConvId}/files`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setAttachedFiles((prev) =>
+            prev.map((f) =>
+              f.name === file.name && f.isUploading
+                ? {
+                    name: file.name,
+                    size: file.size,
+                    llmDescriptor: data.llm_descriptor,
+                    isUploading: false,
+                  }
+                : f
+            )
+          );
+        } else {
+          readFallback(file);
+        }
+      } catch {
+        readFallback(file);
+      }
+    }
 
     e.target.value = '';
     setIsPlusMenuOpen(false);
@@ -119,7 +168,8 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
   };
 
   const handleSubmit = () => {
-    if ((!text.trim() && attachedFiles.length === 0) || disabled || status !== 'idle') return;
+    const stillUploading = attachedFiles.some((f) => f.isUploading);
+    if ((!text.trim() && attachedFiles.length === 0) || disabled || status !== 'idle' || stillUploading) return;
     onSend(text.trim(), attachedFiles, webSearchEnabled || chartsEnabled);
     setText('');
     setAttachedFiles([]);
@@ -149,15 +199,19 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
               key={`${file.name}-${idx}`}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#F3F1EC] dark:bg-[#1A1918] border border-[#E5E2DC] dark:border-[#2E2D2B] text-xs font-mono text-[#1F1E1D] dark:text-[#F4F4F5]"
             >
-              <FileText className="w-3.5 h-3.5 text-[#C2410C] dark:text-[#EA580C]" />
+              <FileText className={`w-3.5 h-3.5 ${file.isUploading ? 'animate-pulse text-[#716E68]' : 'text-[#C2410C] dark:text-[#EA580C]'}`} />
               <span className="truncate max-w-[140px]">{file.name}</span>
-              <button
-                onClick={() => removeFile(idx)}
-                className="hover:text-rose-500 transition-colors ml-1"
-                title="Remove file"
-              >
-                <X className="w-3 h-3" />
-              </button>
+              {file.isUploading ? (
+                <span className="text-[10px] text-[#716E68] dark:text-[#9E9B94] animate-pulse">Uploading...</span>
+              ) : (
+                <button
+                  onClick={() => removeFile(idx)}
+                  className="hover:text-rose-500 transition-colors ml-1"
+                  title="Remove file"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -222,38 +276,19 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
 
               <div className="my-1.5 h-px bg-[#E5E2DC] dark:bg-[#2E2D2B]" />
 
-              {/* Skills Submenu Trigger */}
+              {/* Skills Submenu Trigger (Coming Soon) */}
               <div className="relative">
                 <button
                   type="button"
-                  onClick={() => setShowSkillsSubmenu(!showSkillsSubmenu)}
-                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-[#F3F1EC] dark:hover:bg-[#282826] transition-colors text-left"
+                  disabled
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left opacity-60 cursor-not-allowed"
                 >
-                  <div className="flex items-center gap-2.5">
-                    <ScrollText className="w-4 h-4 text-[#C2410C] dark:text-[#EA580C]" />
+                  <div className="flex items-center gap-2.5 text-[#716E68] dark:text-[#9E9B94]">
+                    <ScrollText className="w-4 h-4" />
                     <span>Skills</span>
                   </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-[#A8A49C]" />
+                  <span className="text-[9px] font-bold uppercase tracking-wider bg-[#E5E2DC] dark:bg-[#2E2D2B] px-1.5 py-0.5 rounded-sm text-[#716E68] dark:text-[#9E9B94]">Soon</span>
                 </button>
-
-                {showSkillsSubmenu && (
-                  <div className="absolute left-full bottom-0 ml-1.5 w-52 bg-[#FFFFFF] dark:bg-[#20201E] border border-[#E5E2DC] dark:border-[#2E2D2B] rounded-2xl shadow-xl p-1.5 z-50 text-xs">
-                    <div className="px-2 py-1 text-[10px] font-semibold text-[#716E68] dark:text-[#9E9B94] uppercase tracking-wider">
-                      Enabled Skills
-                    </div>
-                    {Object.entries(activeSkills).map(([skill, active]) => (
-                      <button
-                        key={skill}
-                        type="button"
-                        onClick={() => toggleSkill(skill)}
-                        className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#F3F1EC] dark:hover:bg-[#282826] transition-colors text-left"
-                      >
-                        <span>{skill}</span>
-                        {active && <Check className="w-3.5 h-3.5 text-sky-500" />}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
 
               <div className="my-1.5 h-px bg-[#E5E2DC] dark:bg-[#2E2D2B]" />
@@ -273,14 +308,14 @@ export const ClaudeInputCard: React.FC<ClaudeInputCardProps> = ({
 
               <button
                 type="button"
-                onClick={() => setMemoryEnabled(!memoryEnabled)}
-                className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-[#F3F1EC] dark:hover:bg-[#282826] transition-colors text-left"
+                disabled
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left opacity-60 cursor-not-allowed"
               >
-                <div className="flex items-center gap-2.5">
-                  <History className="w-4 h-4 text-[#716E68] dark:text-[#9E9B94]" />
+                <div className="flex items-center gap-2.5 text-[#716E68] dark:text-[#9E9B94]">
+                  <History className="w-4 h-4" />
                   <span>Memory</span>
                 </div>
-                {memoryEnabled && <Check className="w-4 h-4 text-sky-500 stroke-[2.5]" />}
+                <span className="text-[9px] font-bold uppercase tracking-wider bg-[#E5E2DC] dark:bg-[#2E2D2B] px-1.5 py-0.5 rounded-sm text-[#716E68] dark:text-[#9E9B94]">Soon</span>
               </button>
 
               <button

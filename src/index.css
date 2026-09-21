@@ -32,6 +32,6 @@
   body {
     background-color: var(--bg-canvas);
     color: var(--text-primary);
-    @apply antialiased font-sans select-none overflow-hidden h-screen w-screen transition-colors duration-200;
+    @apply antialiased font-sans overflow-hidden h-screen w-screen transition-colors duration-200;
   }
 }

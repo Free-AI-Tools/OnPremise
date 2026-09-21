@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { UserProvider } from './context/UserContext';
 import { ClaudeSidebar, NavSection } from './components/ClaudeSidebar';
 import { ChatView } from './components/ChatView';
 import { MCPManagerView } from './components/MCPManagerView';
 import { SkillsManagerView } from './components/SkillsManagerView';
 import { SettingsView } from './components/SettingsView';
 import { ExportModal } from './components/ExportModal';
+import { ChatsAndTasksView } from './components/ChatsAndTasksView';
 
 export const MainApp: React.FC = () => {
   const { theme } = useTheme();
@@ -25,7 +27,7 @@ export const MainApp: React.FC = () => {
   };
 
   return (
-    <div className={`flex h-screen w-screen overflow-hidden font-sans select-none transition-colors duration-200 ${
+    <div className={`flex h-screen w-screen overflow-hidden font-sans transition-colors duration-200 ${
       isDark ? 'dark bg-[#141413] text-[#F4F4F5]' : 'bg-[#FAF9F5] text-[#1F1E1D]'
     }`}>
       {/* Claude Desktop Navigation Sidebar */}
@@ -51,6 +53,16 @@ export const MainApp: React.FC = () => {
             onMessageSent={handleMessageSent}
           />
         )}
+        {currentSection === 'all-chats' && (
+          <ChatsAndTasksView
+            onSelectConversation={(id) => {
+              setConversationId(id);
+              setCurrentSection('chat');
+            }}
+            onNewChat={handleNewChat}
+            onRefreshSidebar={handleMessageSent}
+          />
+        )}
         {currentSection === 'mcp' && <MCPManagerView />}
         {currentSection === 'skills' && <SkillsManagerView />}
         {currentSection === 'settings' && <SettingsView />}
@@ -70,7 +82,9 @@ export const MainApp: React.FC = () => {
 export const App: React.FC = () => {
   return (
     <ThemeProvider>
-      <MainApp />
+      <UserProvider>
+        <MainApp />
+      </UserProvider>
     </ThemeProvider>
   );
 };

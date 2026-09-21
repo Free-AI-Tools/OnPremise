@@ -11,16 +11,24 @@ import {
   PanelLeftClose,
   PanelLeft,
   Sparkles,
-  ChevronDown
+  ChevronDown,
+  Pencil,
+  Check,
+  X,
+  ArrowUpRight,
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
+import { useUser } from '../context/UserContext';
+import { formatShortRelativeTime } from '../utils/date';
 
-export type NavSection = 'chat' | 'mcp' | 'skills' | 'settings' | 'artifacts';
+export type NavSection = 'chat' | 'mcp' | 'skills' | 'settings' | 'artifacts' | 'all-chats';
 
 export interface ConversationItem {
   id: string;
   title: string;
-  updated_at: string;
+  updated_at?: string;
+  created_at?: string;
+  last_message_at?: string;
 }
 
 interface ClaudeSidebarProps {
@@ -43,10 +51,18 @@ export const ClaudeSidebar: React.FC<ClaudeSidebarProps> = ({
   refreshTrigger = 0,
 }) => {
   const { theme, toggleTheme } = useTheme();
+  const { userName, setUserName } = useUser();
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+
+  const handleProfileClick = () => {
+    const newName = window.prompt('Update your profile name:', userName);
+    if (newName && newName.trim()) {
+      setUserName(newName.trim());
+    }
+  };
 
   const fetchConversations = async () => {
     try {
@@ -66,6 +82,9 @@ export const ClaudeSidebar: React.FC<ClaudeSidebarProps> = ({
     fetchConversations();
   }, [refreshTrigger, activeConversationId]);
 
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editTitleDraft, setEditTitleDraft] = useState('');
+
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     try {
@@ -74,6 +93,35 @@ export const ClaudeSidebar: React.FC<ClaudeSidebarProps> = ({
       if (id === activeConversationId) {
         onNewChat();
       }
+    } catch {
+      // Offline
+    }
+  };
+
+  const handleStartRenameChat = (e: React.MouseEvent, item: ConversationItem) => {
+    e.stopPropagation();
+    setEditingChatId(item.id);
+    setEditTitleDraft(item.title || 'Untitled Chat');
+  };
+
+  const handleSaveRenameChat = async (e: React.MouseEvent | React.KeyboardEvent, id: string) => {
+    e.stopPropagation();
+    const trimmed = editTitleDraft.trim();
+    if (!trimmed) {
+      setEditingChatId(null);
+      return;
+    }
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c))
+    );
+    setEditingChatId(null);
+    try {
+      await fetch(`http://localhost:8000/conversations/${id}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      window.dispatchEvent(new CustomEvent('conversation-renamed', { detail: { id, title: trimmed } }));
     } catch {
       // Offline
     }
@@ -168,23 +216,37 @@ export const ClaudeSidebar: React.FC<ClaudeSidebarProps> = ({
         </button>
 
         <button
-          onClick={() => onSelectSection('mcp')}
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg font-medium transition-colors ${
-            currentSection === 'mcp' || currentSection === 'skills'
-              ? 'bg-[#E5E2DC] dark:bg-[#2E2D2B] text-[#C2410C] dark:text-[#EA580C]'
-              : 'text-[#716E68] dark:text-[#9E9B94] hover:bg-[#EAE7E0] dark:hover:bg-[#242320]'
-          }`}
+          disabled
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors text-[#716E68] dark:text-[#9E9B94] opacity-70 cursor-not-allowed"
+          title="Coming in a future update"
         >
-          <Sliders className="w-4 h-4" />
-          <span>Customize (MCP & Skills)</span>
+          <div className="flex items-center gap-2.5">
+            <Sliders className="w-4 h-4" />
+            <span>Customize (MCP & Skills)</span>
+          </div>
+          <span className="text-[9px] font-bold uppercase tracking-wider bg-[#E5E2DC] dark:bg-[#2E2D2B] px-1.5 py-0.5 rounded-sm">Soon</span>
         </button>
       </div>
 
       {/* "Chats and tasks" Section */}
       <div className="flex-1 flex flex-col overflow-hidden px-2 pt-3">
         <div className="px-2.5 pb-2 flex items-center justify-between text-[11px] font-semibold text-[#716E68] dark:text-[#9E9B94]">
-          <span>Chats and tasks</span>
+          <button
+            onClick={() => onSelectSection('all-chats')}
+            className="flex items-center gap-1 hover:text-[#1F1E1D] dark:hover:text-[#F4F4F5] transition-colors cursor-pointer"
+            title="View all chats and tasks"
+          >
+            <span>Chats and tasks</span>
+            <ChevronDown className="w-3 h-3 opacity-60" />
+          </button>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => onSelectSection('all-chats')}
+              className="p-1 hover:bg-[#E5E2DC] dark:hover:bg-[#2E2D2B] rounded transition-colors"
+              title="Open all chats and tasks"
+            >
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={() => setIsSearchOpen(!isSearchOpen)}
               className="p-1 hover:bg-[#E5E2DC] dark:hover:bg-[#2E2D2B] rounded transition-colors"
@@ -216,48 +278,124 @@ export const ClaudeSidebar: React.FC<ClaudeSidebarProps> = ({
               {searchQuery ? 'No matching chats' : 'No conversations yet'}
             </div>
           ) : (
-            filteredConversations.map((item) => {
-              const isActive = item.id === activeConversationId && currentSection === 'chat';
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => {
-                    onSelectConversation(item.id);
-                    onSelectSection('chat');
-                  }}
-                  className={`group relative flex items-center justify-between px-2.5 py-2 rounded-lg text-xs cursor-pointer transition-colors ${
-                    isActive
+            <>
+              {(searchQuery ? filteredConversations : filteredConversations.slice(0, 15)).map((item) => {
+                const isActive = item.id === activeConversationId && currentSection === 'chat';
+                const isEditing = editingChatId === item.id;
+
+                if (isEditing) {
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-[#E5E2DC] dark:bg-[#2E2D2B]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        value={editTitleDraft}
+                        onChange={(e) => setEditTitleDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRenameChat(e, item.id);
+                          if (e.key === 'Escape') setEditingChatId(null);
+                        }}
+                        className="flex-1 min-w-0 text-xs px-2 py-1 rounded bg-[#FAF9F5] dark:bg-[#1A1918] border border-[#C2410C] dark:border-[#EA580C] text-[#1F1E1D] dark:text-[#F4F4F5] focus:outline-none"
+                        autoFocus
+                      />
+                      <button
+                        onClick={(e) => handleSaveRenameChat(e, item.id)}
+                        className="p-1 text-emerald-600 dark:text-emerald-400 hover:bg-[#DCD8D0] dark:hover:bg-[#3D3B37] rounded"
+                        title="Save title"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingChatId(null);
+                        }}
+                        className="p-1 text-[#716E68] dark:text-[#9E9B94] hover:bg-[#DCD8D0] dark:hover:bg-[#3D3B37] rounded"
+                        title="Cancel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      onSelectConversation(item.id);
+                      onSelectSection('chat');
+                    }}
+                    className={`group relative flex items-center justify-between px-2.5 py-2 rounded-lg text-xs cursor-pointer transition-colors ${
+                      isActive
+                        ? 'bg-[#E5E2DC] dark:bg-[#2E2D2B] font-medium text-[#1F1E1D] dark:text-white'
+                        : 'text-[#52504C] dark:text-[#B0ACA4] hover:bg-[#EAE7E0] dark:hover:bg-[#242320]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate min-w-0 pr-2">
+                      <span className="text-[10px] text-[#A8A49C] dark:text-[#6E6B65] shrink-0">○</span>
+                      <span className="truncate">{item.title || 'Untitled Chat'}</span>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0 ml-1">
+                      <span className="text-[10px] text-[#A8A49C] dark:text-[#6E6B65] group-hover:hidden select-none font-mono">
+                        {formatShortRelativeTime(item.last_message_at || item.created_at || item.updated_at)}
+                      </span>
+
+                      <div className="hidden group-hover:flex items-center gap-0.5">
+                        <button
+                          onClick={(e) => handleStartRenameChat(e, item)}
+                          title="Rename Chat"
+                          className="p-1 hover:text-[#C2410C] dark:hover:text-[#EA580C] rounded transition-colors"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => handleDeleteConversation(e, item.id)}
+                          title="Delete Chat"
+                          className="p-1 hover:text-rose-500 rounded transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* View all link matching Screenshot 1 */}
+              {filteredConversations.length > 0 && (
+                <button
+                  onClick={() => onSelectSection('all-chats')}
+                  className={`w-full text-left px-2.5 py-2 text-xs rounded-lg transition-colors flex items-center justify-between group ${
+                    currentSection === 'all-chats'
                       ? 'bg-[#E5E2DC] dark:bg-[#2E2D2B] font-medium text-[#1F1E1D] dark:text-white'
-                      : 'text-[#52504C] dark:text-[#B0ACA4] hover:bg-[#EAE7E0] dark:hover:bg-[#242320]'
+                      : 'text-[#716E68] dark:text-[#9E9B94] hover:bg-[#EAE7E0] dark:hover:bg-[#242320] hover:text-[#1F1E1D] dark:hover:text-[#F4F4F5]'
                   }`}
                 >
-                  <div className="flex items-center gap-2 truncate pr-6">
-                    <span className="text-[10px] text-[#A8A49C] dark:text-[#6E6B65]">○</span>
-                    <span className="truncate">{item.title || 'Untitled Chat'}</span>
-                  </div>
-
-                  <button
-                    onClick={(e) => handleDeleteConversation(e, item.id)}
-                    title="Delete Chat"
-                    className="opacity-0 group-hover:opacity-100 p-1 hover:text-rose-500 rounded transition-opacity"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              );
-            })
+                  <span>View all</span>
+                  <ArrowUpRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
 
       {/* Bottom User Profile & Theme Footer */}
       <div className="p-2.5 border-t border-[#E5E2DC] dark:border-[#2E2D2B] flex items-center justify-between">
-        <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[#E5E2DC] dark:hover:bg-[#2E2D2B] cursor-pointer flex-1 transition-colors">
+        <div 
+          onClick={handleProfileClick}
+          className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[#E5E2DC] dark:hover:bg-[#2E2D2B] cursor-pointer flex-1 transition-colors"
+        >
           <div className="w-7 h-7 rounded-full bg-[#C2410C]/15 dark:bg-[#EA580C]/20 text-[#C2410C] dark:text-[#EA580C] font-semibold flex items-center justify-center text-xs">
-            H
+            {userName.charAt(0).toUpperCase()}
           </div>
           <div className="flex flex-col truncate">
-            <span className="text-xs font-semibold leading-tight">Harsh</span>
+            <span className="text-xs font-semibold leading-tight">{userName}</span>
             <span className="text-[10px] text-[#716E68] dark:text-[#9E9B94] leading-tight">Local Edge</span>
           </div>
           <ChevronDown className="w-3.5 h-3.5 ml-auto text-[#716E68] dark:text-[#9E9B94]" />

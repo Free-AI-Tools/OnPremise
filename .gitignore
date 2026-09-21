@@ -21,8 +21,10 @@ src-tauri/models/
 
 # Local SQLite databases & dynamic runtime configs
 *.db
-backend/.config/assistant_history.db
-backend/.config/*.json
+backend/.config/
+data/
+backend/data/
+data_location.txt
 
 # Agent & CLI directories (as requested)
 .claude/

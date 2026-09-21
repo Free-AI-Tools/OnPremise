@@ -1,13 +1,19 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useUser } from '../context/UserContext';
 
 export const ClaudeHero: React.FC = () => {
-  const getGreeting = () => {
+  const { userName } = useUser();
+  const [greeting, setGreeting] = useState('');
+
+  useEffect(() => {
     const hour = new Date().getHours();
-    if (hour >= 22 || hour < 5) return 'Up late, Harsh?';
-    if (hour < 12) return 'Good morning, Harsh';
-    if (hour < 17) return 'Good afternoon, Harsh';
-    return 'Good evening, Harsh';
-  };
+    let text = 'Good evening';
+    if (hour >= 22 || hour < 5) text = 'Up late';
+    else if (hour < 12) text = 'Good morning';
+    else if (hour < 17) text = 'Good afternoon';
+    
+    setGreeting(text === 'Up late' ? `Up late, ${userName}?` : `${text}, ${userName}`);
+  }, [userName]);
 
   return (
     <div className="flex flex-col items-center justify-center my-auto py-12 select-none">
@@ -23,7 +29,7 @@ export const ClaudeHero: React.FC = () => {
 
         {/* Serif Headline matching Claude typography */}
         <h1 className="text-3xl sm:text-4xl font-serif tracking-tight text-[#1F1E1D] dark:text-[#F4F4F5]">
-          {getGreeting()}
+          {greeting}
         </h1>
       </div>
     </div>
