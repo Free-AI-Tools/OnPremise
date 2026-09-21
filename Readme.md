@@ -62,6 +62,26 @@ flowchart TD
 
 ---
 
+## 🖥️ System Requirements & Performance
+
+**Minimum Requirements:**
+- **OS:** Windows 10 / 11
+- **RAM:** 4 GB System RAM (Context window automatically scales down to fit)
+- **Disk Space:** ~3 GB (Includes app, quantized model, and portable data)
+- **GPU:** No dedicated GPU required (CPU fallback supported)
+
+**Recommended Requirements:**
+- **RAM:** 8 GB or 16 GB+ (Allows maximum 16,384 token context window)
+- **Disk:** NVMe / SSD (for instant ~3 second model loading)
+- **GPU:** Any Vulkan-compatible GPU (Intel Iris, AMD Radeon, NVIDIA) for **25–50+ tokens/sec** generation speed.
+
+**Resource Usage:**
+- **UI & Backend:** ~150–250 MB
+- **Model (Qwen2.5-3B-Q4):** ~2.2 GB
+- **Max Memory Footprint:** Peaks at ~4 GB under maximum load with full context.
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
