@@ -9,11 +9,25 @@ Wires together:
   - db.py (SQLite chat history persistence)
   - REST endpoints for MCP, Tools, Skills, and Conversations
 """
+import sys
+
+# Support running as a Python runner via -c (prevents restarting uvicorn during execute_python in frozen executable)
+if len(sys.argv) > 1 and "-c" in sys.argv:
+    c_idx = sys.argv.index("-c")
+    if len(sys.argv) > c_idx + 1:
+        import traceback
+        code = sys.argv[c_idx + 1]
+        try:
+            exec(code)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+        sys.exit(0)
+
 import json
 import logging
 import subprocess
 import shutil
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path

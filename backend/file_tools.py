@@ -293,8 +293,16 @@ async def execute_file_tool(
             def run_proc():
                 env = os.environ.copy()
                 env["PYTHONIOENCODING"] = "utf-8"
+
+                py_bin = sys.executable
+                # If running inside frozen PyInstaller bundle, prefer host Python if installed
+                if getattr(sys, "frozen", False):
+                    host_py = shutil.which("python") or shutil.which("python3") or shutil.which("py")
+                    if host_py:
+                        py_bin = host_py
+
                 return subprocess.run(
-                    [sys.executable, "-c", code],
+                    [py_bin, "-c", code],
                     cwd=str(ws),
                     env=env,
                     capture_output=True,
@@ -309,7 +317,7 @@ async def execute_file_tool(
 
             # Check for newly generated files
             after_files = set(outputs_dir.iterdir()) if outputs_dir.exists() else set()
-            new_files = [f.name for f in (after_files - before_files) if f.is_file()]
+            new_files = [f for f in (after_files - before_files) if f.is_file()]
 
             output_lines = []
             if stdout:
@@ -317,12 +325,33 @@ async def execute_file_tool(
             if stderr:
                 output_lines.append(f"Stderr:\n{stderr}")
             if new_files:
-                output_lines.append(f"Generated Files: {', '.join(new_files)}")
+                output_lines.append(f"Generated Files: {', '.join(f.name for f in new_files)}")
             if proc.returncode != 0:
                 output_lines.append(f"Exited with error code: {proc.returncode}")
 
             res_text = "\n\n".join(output_lines) if output_lines else "Code executed successfully with no output."
-            return res_text, None
+
+            # Automatically pop open the first generated file as an Artifact on canvas
+            artifact_payload = None
+            if new_files:
+                first_file = new_files[0]
+                try:
+                    content = first_file.read_text(encoding="utf-8")
+                    ext = first_file.suffix.lstrip(".").lower()
+                    art_type = "table" if ext in ("csv", "tsv") else ("code" if ext in ("py", "js", "ts", "json", "sql") else "markdown")
+                    artifact_payload = {
+                        "id": first_file.name,
+                        "filename": first_file.name,
+                        "title": first_file.name,
+                        "type": art_type,
+                        "language": ext or "text",
+                        "code": content,
+                        "content": content,
+                    }
+                except Exception as read_err:
+                    logger.warning(f"Could not read generated file '{first_file.name}' for artifact: {read_err}")
+
+            return res_text, artifact_payload
 
         except subprocess.TimeoutExpired:
             return "Error: Execution timed out after 30 seconds.", None

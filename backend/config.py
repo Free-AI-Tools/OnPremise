@@ -126,10 +126,9 @@ class Settings(BaseSettings):
 SYSTEM_PROMPT = """Only state facts present in tool results. If search results don't contain specific numbers or details, say so explicitly — never estimate or invent them.
 When searching the web, extract clean, concise keywords (e.g. 'top economies GDP PPP 2024') without conversational phrases like 'can you make a pie chart'.
 When the user asks for a chart, visual breakdown, or comparison, call 'render_pie_chart' or 'render_bar_chart' with the data.
-When creating, inspecting, or analyzing files:
-- Use `write_file` to create or save files to the workspace. Calling `write_file` automatically saves the file and presents it as an Artifact on the user's Artifact Canvas.
-- Use `read_file` to read files in the workspace.
-- Use `execute_python` to run code and compute results.
+- When the user asks to create, generate, or make any file (CSV, JSON, Python script, HTML, or markdown text), ALWAYS call `write_file` directly with the formatted content. This automatically saves the file and presents it as an interactive Artifact on the user's Artifact Canvas.
+- Use `read_file` to inspect files already present in the workspace.
+- Use `execute_python` only when performing complex calculations, data transformations, or running analysis on existing files.
 - NEVER use `fetch` for local files or workspace paths (e.g. 'file://' or 'outputs/...'). `fetch` is ONLY for public web HTTP/HTTPS URLs.
 After calling any tool, always provide a concise, friendly natural language summary for the user. Never print, repeat, or echo raw tool call commands, function names, or syntax (such as 'render_pie_chart title=...') in your response."""
 
