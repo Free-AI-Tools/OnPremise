@@ -137,14 +137,24 @@ npm run tauri dev
 
 ---
 
-## 📦 Building the Standalone Executable
+## 📦 Building the Standalone Executable (Pipeline)
 
-The app uses Tauri v2's native sidecar system. When bundled, Tauri packages the backend executable and the inference server directly into a self-contained desktop bundle with an automated splashscreen.
+The app uses Tauri v2's native sidecar system. Because it bundles both a React frontend and a compiled Python FastAPI backend, we use a custom pipeline script to compile everything sequentially.
 
-```bash
-npm run tauri build
-```
-The resulting installer and portable executable will be placed in `src-tauri/target/release/bundle/nsis/`.
+To build a fresh release installer:
+1. Open PowerShell in the project root.
+2. Run the automated build pipeline:
+   ```powershell
+   .\build_release.ps1
+   ```
+   *(Optional: You can append `-Clean` to clear old cache before building).*
+
+This script will automatically:
+1. Compile `backend/main.py` into a portable binary using `PyInstaller`.
+2. Move the binary into the `src-tauri/binaries/` folder as a sidecar.
+3. Bundle the React UI and Rust framework into a single installer using `npm run tauri build`.
+
+The resulting Windows installer will be placed in `src-tauri/target/release/bundle/nsis/`.
 
 ---
 
