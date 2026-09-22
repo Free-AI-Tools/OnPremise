@@ -230,6 +230,140 @@ def update_profile(data: ProfileUpdate):
     return {"status": "ok", "name": data.name}
 
 # =====================================================================
+# Model Management & Onboarding Endpoints
+# =====================================================================
+
+MODEL_FILENAME = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+MODEL_DOWNLOAD_URL = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+
+def get_models_dir() -> Path:
+    models_dir = get_settings().config_dir / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return models_dir
+
+def find_installed_model() -> Path | None:
+    candidates = [
+        get_models_dir() / MODEL_FILENAME,
+        Path("models") / MODEL_FILENAME,
+        Path("src-tauri/models") / MODEL_FILENAME,
+        Path("../models") / MODEL_FILENAME,
+        Path("../src-tauri/models") / MODEL_FILENAME,
+    ]
+    for c in candidates:
+        if c.exists() and c.is_file() and c.stat().st_size > 100_000_000:
+            return c.resolve()
+    return None
+
+@app.get("/model/status")
+async def get_model_status():
+    installed_path = find_installed_model()
+    models_dir = get_models_dir()
+    disk_info = get_disk_space_info(models_dir)
+
+    server_running = False
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            res = await client.get(f"{get_settings().llama_server_url}/health")
+            server_running = (res.status_code == 200)
+    except Exception:
+        server_running = False
+
+    return {
+        "installed": installed_path is not None,
+        "model_name": "Qwen 2.5 3B Instruct",
+        "model_path": str(installed_path) if installed_path else None,
+        "size_bytes": installed_path.stat().st_size if installed_path else 0,
+        "size_gb": round(installed_path.stat().st_size / (1024**3), 2) if installed_path else 0,
+        "storage_dir": str(models_dir.resolve()),
+        "disk_free_gb": disk_info.get("free_gb", 0),
+        "server_running": server_running,
+    }
+
+class ModelImportRequest(BaseModel):
+    source_path: str
+
+@app.post("/model/import")
+async def import_local_model(req: ModelImportRequest):
+    src = Path(req.source_path)
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=400, detail="Specified model file does not exist.")
+
+    if not src.name.lower().endswith(".gguf"):
+        raise HTTPException(status_code=400, detail="File must be in .gguf format.")
+
+    dest = get_models_dir() / MODEL_FILENAME
+    try:
+        shutil.copyfile(src, dest)
+        return {
+            "status": "imported",
+            "model_path": str(dest.resolve()),
+            "size_bytes": dest.stat().st_size,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to import model: {e}")
+
+@app.get("/model/download-stream")
+async def download_model_stream():
+    """Stream model download progress using Server-Sent Events."""
+    dest_path = get_models_dir() / MODEL_FILENAME
+    temp_path = get_models_dir() / f"{MODEL_FILENAME}.tmp"
+
+    async def progress_generator():
+        import httpx
+        import time
+
+        yield f"data: {json.dumps({'stage': 'starting', 'percent': 0, 'speed_mbps': 0, 'eta_seconds': 0})}\n\n"
+
+        start_time = time.time()
+        last_yield_time = start_time
+        downloaded = 0
+        total = 2147483648
+
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(3600.0, connect=20.0)) as client:
+                async with client.stream("GET", MODEL_DOWNLOAD_URL) as response:
+                    if response.status_code != 200:
+                        yield f"data: {json.dumps({'stage': 'error', 'error': f'Download failed with HTTP {response.status_code}'})}\n\n"
+                        return
+
+                    total = int(response.headers.get("content-length", total))
+
+                    with open(temp_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            now = time.time()
+
+                            if now - last_yield_time > 0.35:
+                                elapsed = now - start_time
+                                speed_bps = downloaded / elapsed if elapsed > 0 else 0
+                                speed_mbps = round(speed_bps / (1024 * 1024), 1)
+                                remaining_bytes = max(0, total - downloaded)
+                                eta_s = int(remaining_bytes / speed_bps) if speed_bps > 0 else 0
+                                percent = round((downloaded / total) * 100, 1)
+
+                                last_yield_time = now
+                                yield f"data: {json.dumps({'stage': 'downloading', 'downloaded_bytes': downloaded, 'total_bytes': total, 'percent': percent, 'speed_mbps': speed_mbps, 'eta_seconds': eta_s})}\n\n"
+
+            yield f"data: {json.dumps({'stage': 'verifying', 'percent': 100})}\n\n"
+            if temp_path.exists():
+                if dest_path.exists():
+                    dest_path.unlink()
+                temp_path.rename(dest_path)
+
+            yield f"data: {json.dumps({'stage': 'ready', 'percent': 100, 'model_path': str(dest_path.resolve())})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Model download error: {e}")
+            if temp_path.exists():
+                try: temp_path.unlink()
+                except Exception: pass
+            yield f"data: {json.dumps({'stage': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(progress_generator(), media_type="text/event-stream")
+
+# =====================================================================
 # Conversation History Endpoints
 # =====================================================================
 

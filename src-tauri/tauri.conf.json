@@ -49,7 +49,6 @@
       "binaries/backend"
     ],
     "resources": [
-      "models/*",
       "binaries/*.dll"
     ]
   }

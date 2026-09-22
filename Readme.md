@@ -7,6 +7,7 @@ A private, local-first desktop AI assistant designed for edge devices. Features 
 ## 🌟 Highlights
 
 - **100% Local & Private:** Runs entirely on-device using quantized edge models (`Qwen2.5-3B-Instruct-Q4_K_M`) via Vulkan GPU acceleration.
+- **Lightweight ~35 MB Installer & In-App Onboarding:** Decoupled model setup allows the desktop installer to build in under 60 seconds. On first run, the app streams the model with live progress or lets you import existing local `.gguf` weights.
 - **True Portable Design:** All data (chats, workspaces, profiles) is stored in the application directory or a custom path via `data_location.txt`, allowing you to run it from any drive (e.g. `D:\`) without cluttering `C:\`.
 - **Claude SaaS Aesthetic:** Refined interface inspired by Claude Desktop, featuring:
   - Dynamic time-based greeting with your custom **dynamic profile name** (*"Up late, Harsh?"*).

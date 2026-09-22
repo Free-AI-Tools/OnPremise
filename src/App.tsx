@@ -8,6 +8,7 @@ import { SkillsManagerView } from './components/SkillsManagerView';
 import { SettingsView } from './components/SettingsView';
 import { ExportModal } from './components/ExportModal';
 import { ChatsAndTasksView } from './components/ChatsAndTasksView';
+import { ModelSetupModal } from './components/ModelSetupModal';
 
 export const MainApp: React.FC = () => {
   const { theme } = useTheme();
@@ -16,6 +17,18 @@ export const MainApp: React.FC = () => {
   const [conversationId, setConversationId] = useState<string>(() => `conv_${Date.now()}`);
   const [showExportModal, setShowExportModal] = useState(false);
   const [sidebarRefresh, setSidebarRefresh] = useState(0);
+  const [showModelSetup, setShowModelSetup] = useState(false);
+
+  React.useEffect(() => {
+    fetch('http://localhost:8000/model/status')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.installed === false) {
+          setShowModelSetup(true);
+        }
+      })
+      .catch((err) => console.warn('Model status check failed:', err));
+  }, []);
 
   const handleNewChat = () => {
     setConversationId(`conv_${Date.now()}`);
@@ -73,6 +86,13 @@ export const MainApp: React.FC = () => {
         <ExportModal
           conversationId={conversationId}
           onClose={() => setShowExportModal(false)}
+        />
+      )}
+
+      {/* Model Onboarding & Download Modal */}
+      {showModelSetup && (
+        <ModelSetupModal
+          onComplete={() => setShowModelSetup(false)}
         />
       )}
     </div>

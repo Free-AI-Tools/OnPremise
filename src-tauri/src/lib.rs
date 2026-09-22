@@ -35,15 +35,120 @@ fn setup_job_object(child_pid: u32) {
     }
 }
 
+fn find_model_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 1. Check data_location.txt pointer
+    if let Ok(ptr_content) = std::fs::read_to_string("data_location.txt") {
+        let p = std::path::PathBuf::from(ptr_content.trim()).join("models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+        if p.exists() { return Some(p); }
+    }
+    // 2. Check resource_dir / models
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let p = res_dir.join("models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+        if p.exists() { return Some(p); }
+    }
+    // 3. Check app_data_dir / models
+    if let Ok(app_dir) = app.path().app_data_dir() {
+        let p = app_dir.join("models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+        if p.exists() { return Some(p); }
+    }
+    // 4. Check ./models/
+    let local_models = std::path::PathBuf::from("models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+    if local_models.exists() { return Some(local_models); }
+
+    // 5. Check backend/.config/models/
+    let backend_cfg = std::path::PathBuf::from("backend/.config/models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+    if backend_cfg.exists() { return Some(backend_cfg); }
+
+    // 6. Check src-tauri/models/ (dev)
+    let dev_models = std::path::PathBuf::from("src-tauri/models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
+    if dev_models.exists() { return Some(dev_models); }
+
+    None
+}
+
+fn spawn_llama_server_with_path(app: &tauri::AppHandle, model_path: &std::path::Path) -> Result<(), String> {
+    let total_ram_gb = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.total_memory() as f64) / 1_073_741_824.0
+    };
+
+    let ctx_size = if total_ram_gb <= 4.0 {
+        "2048"
+    } else if total_ram_gb <= 8.0 {
+        "4096"
+    } else if total_ram_gb <= 16.0 {
+        "8192"
+    } else {
+        "16384"
+    };
+
+    let model_str = model_path.to_string_lossy().to_string();
+
+    match app.shell().sidecar("llama-server") {
+        Ok(cmd) => match cmd.args([
+            "-m", &model_str,
+            "-c", ctx_size,
+            "--port", "8080",
+            "--jinja"
+        ]).spawn() {
+            Ok((mut rx, child)) => {
+                #[cfg(windows)]
+                setup_job_object(child.pid());
+                println!("[Tauri Rust] Spawned llama-server PID {} with model: {}", child.pid(), model_str);
+                tauri::async_runtime::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            tauri_plugin_shell::process::CommandEvent::Stderr(b) => {
+                                eprintln!("[llama-server stderr] {}", String::from_utf8_lossy(&b));
+                            }
+                            tauri_plugin_shell::process::CommandEvent::Terminated(p) => {
+                                println!("[llama-server] Terminated with code: {:?}", p.code);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to spawn llama-server: {:?}", e)),
+        },
+        Err(e) => Err(format!("Sidecar llama-server not found: {:?}", e)),
+    }
+}
+
+#[tauri::command]
+fn start_llama_server(app: tauri::AppHandle, custom_path: Option<String>) -> Result<bool, String> {
+    let model_to_use = if let Some(cp) = custom_path {
+        let p = std::path::PathBuf::from(cp);
+        if p.exists() {
+            p
+        } else {
+            return Err("Specified model file does not exist".to_string());
+        }
+    } else {
+        match find_model_path(&app) {
+            Some(p) => p,
+            None => return Err("No model file found".to_string()),
+        }
+    };
+
+    spawn_llama_server_with_path(&app, &model_to_use)?;
+    Ok(true)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![start_llama_server])
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // Spawn sidecars in release / binary mode if sidecars exist
+            // Spawn backend sidecar in release / binary mode if sidecars exist
             match app.shell().sidecar("backend") {
                 Ok(cmd) => match cmd.spawn() {
                     Ok((mut rx, child)) => {
@@ -70,72 +175,12 @@ pub fn run() {
                 Err(e) => eprintln!("[Tauri Rust] Backend sidecar not configured or not found: {:?}", e),
             }
 
-            // Detect system RAM and choose context window size
-            let total_ram_gb = {
-                use sysinfo::System;
-                let mut sys = System::new();
-                sys.refresh_memory();
-                (sys.total_memory() as f64) / 1_073_741_824.0 // bytes → GB
-            };
-
-            let ctx_size = if total_ram_gb <= 4.0 {
-                "2048"
-            } else if total_ram_gb <= 8.0 {
-                "4096"
-            } else if total_ram_gb <= 16.0 {
-                "8192"
+            // Check if model already exists; if so, spawn llama-server right away
+            if let Some(existing_model) = find_model_path(&app_handle) {
+                println!("[Tauri Rust] Found existing model at {:?}. Spawning llama-server...", existing_model);
+                let _ = spawn_llama_server_with_path(&app_handle, &existing_model);
             } else {
-                "16384"
-            };
-            println!("[Tauri Rust] Detected {:.1} GB RAM → using -c {}", total_ram_gb, ctx_size);
-
-            // Resolve model path dynamically from resource_dir or fallback paths
-            let model_path = app
-                .path()
-                .resource_dir()
-                .map(|p| p.join("models").join("Qwen2.5-3B-Instruct-Q4_K_M.gguf"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("models/Qwen2.5-3B-Instruct-Q4_K_M.gguf"));
-
-            let model_arg = if model_path.exists() {
-                model_path.to_string_lossy().to_string()
-            } else if std::path::Path::new("models/Qwen2.5-3B-Instruct-Q4_K_M.gguf").exists() {
-                "models/Qwen2.5-3B-Instruct-Q4_K_M.gguf".to_string()
-            } else if std::path::Path::new("src-tauri/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf").exists() {
-                "src-tauri/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf".to_string()
-            } else {
-                "models/Qwen2.5-3B-Instruct-Q4_K_M.gguf".to_string()
-            };
-
-            // Spawn llama-server sidecar with adaptive context window
-            match app.shell().sidecar("llama-server") {
-                Ok(cmd) => match cmd.args([
-                    "-m", &model_arg,
-                    "-c", ctx_size,
-                    "--port", "8080",
-                    "--jinja"
-                ]).spawn() {
-                    Ok((mut rx, child)) => {
-                        #[cfg(windows)]
-                        setup_job_object(child.pid());
-                        println!("[Tauri Rust] Spawned llama-server sidecar PID {} with ctx={} model={}", child.pid(), ctx_size, model_arg);
-                        tauri::async_runtime::spawn(async move {
-                            while let Some(event) = rx.recv().await {
-                                match event {
-                                    tauri_plugin_shell::process::CommandEvent::Stderr(b) => {
-                                        eprintln!("[llama-server stderr] {}", String::from_utf8_lossy(&b));
-                                    }
-                                    tauri_plugin_shell::process::CommandEvent::Terminated(p) => {
-                                        println!("[llama-server] Process terminated with code: {:?}", p.code);
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => eprintln!("[Tauri Rust] Failed to spawn llama-server sidecar: {:?}", e),
-                },
-                Err(e) => eprintln!("[Tauri Rust] llama-server sidecar not configured or not found: {:?}", e),
+                println!("[Tauri Rust] No model found on disk. Waiting for in-app model onboarding.");
             }
 
             // Health polling task for window transition
